@@ -1,5 +1,13 @@
 import asyncio
+import logging
 import sys
+
+# Настройка логирования для вывода в консоль хостинга
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    stream=sys.stdout
+)
 import os
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, StateFilter
@@ -15,7 +23,6 @@ from aiogram.types import (
 import aiosqlite
 
 # ================= КОНФИГУРАЦИЯ =================
-import os
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_ID = 358741967
 

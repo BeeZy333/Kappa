@@ -15,7 +15,8 @@ from aiogram.types import (
 import aiosqlite
 
 # ================= КОНФИГУРАЦИЯ =================
-BOT_TOKEN = '7988135474:AAGgeT1tOlPR-DXhZmpeimukr1uBvL6eAvY'
+import os
+BOT_TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_ID = 358741967
 
 # Константы для премии (остаются в коде, так как формулы не менялись)

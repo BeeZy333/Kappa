@@ -211,14 +211,21 @@ async def cmd_load_archive(message: types.Message):
         data = message.text.replace('/load_archive', '').replace(' ', '').split(',')
         if len(data) == 4:
             revenue, traffic, conversion, upt = map(float, data)
-            
-            calc_baskets = traffic * (conversion / 100)
-            calc_items = calc_baskets * upt
-            
             current_month = datetime.now().strftime('%Y-%m')
-            archive_date = f"{current_month}-00"
             
             async with aiosqlite.connect(DB_NAME) as db:
+                # Если введены все нули — это триггер полного очищения месяца от тестового мусора
+                if revenue == 0 and traffic == 0 and conversion == 0 and upt == 0:
+                    await db.execute('DELETE FROM store_daily_history WHERE date LIKE ?', (f"{current_month}%",))
+                    await db.commit()
+                    await message.answer("База данных за текущий месяц полностью очищена (все тесты удалены).")
+                    return
+                
+                # Обычная логика загрузки чистых агрегированных данных
+                calc_baskets = traffic * (conversion / 100)
+                calc_items = calc_baskets * upt
+                archive_date = f"{current_month}-00"
+                
                 await db.execute('''
                     INSERT OR REPLACE INTO store_daily_history 
                     (date, revenue, traffic, calculated_baskets, calculated_items) 

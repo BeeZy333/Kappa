@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+from datetime import datetime, timedelta
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, StateFilter
@@ -462,6 +463,32 @@ async def parse_evening_report(message: types.Message):
         traffic = int(raw_numbers[2])
         conversion_pct = raw_numbers[3]
         upt = raw_numbers[4]
+        
+        # --- УМНОЕ ОПРЕДЕЛЕНИЕ ДАТЫ ---
+        now = datetime.now()
+        if now.hour < 22:
+            # Скинули до 22:00 — значит, досылают хвосты за вчера
+            target_date = (now - timedelta(days=1)).strftime('%Y-%m-%d')
+            date_label = "ВЧЕРАШНИЙ день"
+        else:
+            # Скинули после 22:00 — штатный отчёт за текущие сутки
+            target_date = now.strftime('%Y-%m-%d')
+            date_label = "ТЕКУЩИЕ сутки"
+            
+        calc_baskets = traffic * (conversion_pct / 100)
+        calc_items = calc_baskets * upt
+        
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute('''
+                INSERT OR REPLACE INTO store_daily_history 
+                (date, revenue, traffic, calculated_baskets, calculated_items) 
+                VALUES (?, ?, ?, ?, ?)
+            ''', (target_date, revenue, traffic, calc_baskets, calc_items))
+            await db.commit()
+            
+        await message.reply(f"
+        Данные автоматически распознаны за **{date_label} ({target_date})** и сохранены в базу.\n\n"
+                            f"Расчетные чеки: {calc_baskets:.2f}\nРасчетные товары: {calc_items:.2f}")
         
         # Вычисление и сохранение точных REAL значений без принудительного округления вниз через int()
         calc_baskets = traffic * (conversion_pct / 100)

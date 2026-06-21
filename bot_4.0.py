@@ -486,8 +486,7 @@ async def parse_evening_report(message: types.Message):
             ''', (target_date, revenue, traffic, calc_baskets, calc_items))
             await db.commit()
             
-        await message.reply(f"
-        Данные автоматически распознаны за **{date_label} ({target_date})** и сохранены в базу.\n\n"
+        await message.reply(f"Данные автоматически распознаны за **{date_label} ({target_date})** и сохранены в базу.\n\n"
                             f"Расчетные чеки: {calc_baskets:.2f}\nРасчетные товары: {calc_items:.2f}")
         
         # Вычисление и сохранение точных REAL значений без принудительного округления вниз через int()

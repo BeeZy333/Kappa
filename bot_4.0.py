@@ -489,24 +489,7 @@ async def parse_evening_report(message: types.Message):
         await message.reply(f"Данные автоматически распознаны за **{date_label} ({target_date})** и сохранены в базу.\n\n"
                             f"Расчетные чеки: {calc_baskets:.2f}\nРасчетные товары: {calc_items:.2f}")
         
-        # Вычисление и сохранение точных REAL значений без принудительного округления вниз через int()
-        calc_baskets = traffic * (conversion_pct / 100)
-        calc_items = calc_baskets * upt
-        
-        current_date = datetime.now().strftime('%Y-%m-%d')
-        
-        async with aiosqlite.connect(DB_NAME) as db:
-            await db.execute('''
-                INSERT OR REPLACE INTO store_daily_history 
-                (date, revenue, traffic, calculated_baskets, calculated_items) 
-                VALUES (?, ?, ?, ?, ?)
-            ''', (current_date, revenue, traffic, calc_baskets, calc_items))
-            await db.commit()
-            
-        await message.reply(f"Данные за {current_date} сохранены в базу.\n"
-                            f"Расчетные чеки: {calc_baskets:.2f}\nРасчетные товары: {calc_items:.2f}")
-
-# ================= КОМАНДА (АДМИН) =================
+# =============== КОМАНДА (АДМИН) =================
 @dp.message(F.text == "Команда")
 async def cmd_team_list(message: types.Message):
     if message.from_user.id != ADMIN_ID: return

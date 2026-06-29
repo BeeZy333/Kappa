@@ -499,3 +499,132 @@ async def process_report_date(message: types.Message, state: FSMContext):
     except ValueError:
         await message.answer("Такой даты не существует в календаре. Перепроверь числа.")
         return
+        
+    user_data = await state.get_data()
+    report = user_data.get('pending_report')
+    
+    if not report:
+        await message.answer("Данные отчета потерялись. Скинь текст 8420 заново.")
+        await state.clear()
+        return
+        
+    revenue = report['revenue']
+    traffic = report['traffic']
+    conversion_pct = report['conversion_pct']
+    upt = report['upt']
+    
+    calc_baskets = traffic * (conversion_pct / 100)
+    calc_items = calc_baskets * upt
+    
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute('''
+            INSERT OR REPLACE INTO store_daily_history 
+            (date, revenue, traffic, calculated_baskets, calculated_items) 
+            VALUES (?, ?, ?, ?, ?)
+        ''', (target_date, revenue, traffic, calc_baskets, calc_items))
+        await db.commit()
+        
+    is_admin = (message.from_user.id == ADMIN_ID)
+    await message.reply(
+        f"Данные успешно записаны за {target_date_obj.strftime('%d.%m.%Y')}!\n\n"
+        f"Расчетные чеки: {calc_baskets:.2f}\n"
+        f"Расчетные товары: {calc_items:.2f}",
+        reply_markup=get_main_keyboard(is_admin)
+    )
+    await state.clear()
+
+# ================= КОМАНДА =================
+@dp.message(F.text == "Команда")
+async def cmd_team_list(message: types.Message):
+    if message.from_user.id != ADMIN_ID: return
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("SELECT user_id, full_name FROM users WHERE status = 'approved' AND user_id != ?", (ADMIN_ID,))
+        users = await cursor.fetchall()
+        
+    if not users:
+        await message.answer("В команде пока никого нет.")
+        return
+
+    for uid, name in users:
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Удалить", callback_data=f"delete_{uid}")]])
+        await message.answer(f"Сотрудник: {name}", reply_markup=kb)
+
+# ================= ПРОЧЕЕ =================
+@dp.message(F.text == "Инструкция")
+async def cmd_help(message: types.Message):
+    is_admin = (message.from_user.id == ADMIN_ID)
+    
+    text = (
+        "Инструкция\n\n"
+        "Отчет по магазину 8420:\n"
+        "Просто перешли вечерний отчет, начинающийся с 8420.\n"
+        "Бот сам достанет Выручку, Трафик, Конверсию и UPT, а затем попросит указать дату отчета.\n\n"
+        "Отчет через запятую (старый):\n"
+        "Пришли цифры: Выручка, Чеки, Штуки, Заходы.\n"
+        "Пример: 140000, 42, 84, 400.\n\n"
+        "Расчет премии:\n"
+        "Нажми «Премия», выбери сотрудника и введи: Личный Факт, Отработанные часы.\n"
+        "Пример: 950000, 160."
+    )
+    
+    if is_admin:
+        text += (
+            "\n\nЗагрузка архива:\n"
+            "Для загрузки старых данных введи:\n"
+            "/load_archive Выручка, Трафик, Конверсия, UPT\n"
+            "Сброс текущего месяца: /load_archive 0,0,0,0"
+        )
+        
+    await message.answer(text)
+
+@dp.callback_query(F.data.startswith(("approve_", "reject_", "delete_")))
+async def callbacks_handler(callback: CallbackQuery):
+    action, uid = callback.data.split("_")
+    uid = int(uid)
+    async with aiosqlite.connect(DB_NAME) as db:
+        if action == "approve":
+            await db.execute("UPDATE users SET status = 'approved' WHERE user_id = ?", (uid,))
+            await bot.send_message(uid, "Доступ открыт!", reply_markup=get_main_keyboard(False))
+            await callback.message.edit_text("Пользователь одобрен.")
+        elif action == "reject" or action == "delete":
+            await db.execute("DELETE FROM users WHERE user_id = ?", (uid,))
+            await callback.message.edit_text("Доступ закрыт/удален.")
+        await db.commit()
+    await callback.answer()
+
+@dp.message()
+async def auto_report(message: types.Message):
+    try:
+        data = message.text.replace(' ', '').split(',')
+        if len(data) == 4:
+            to_sum, baskets, items, visitors = map(float, data)
+            plans = await get_plans()
+            p_conv, p_upt, p_check = plans[0], plans[1], plans[2]
+
+            f_conv = (baskets / visitors) * 100 if visitors > 0 else 0
+            f_upt = items / baskets if baskets > 0 else 0
+            f_check = to_sum / baskets if baskets > 0 else 0
+
+            res = (
+                f"{STORE_CODE}\n\n"
+                f"{int(to_sum)}\n"
+                f"{int(visitors)}\n"
+                f"{f_conv:.1f}% ({int(f_conv/p_conv*100)}%)\n"
+                f"{f_upt:.2f} ({int(f_upt/p_upt*100)}%)\n"
+                f"{f_check:.0f} ({int(f_check/p_check*100)}%)"
+            )
+            await message.answer(res)
+    except:
+        pass
+
+async def main():
+    await init_db()
+    # Принудительно сбрасываем вебхук и старую очередь сообщений перед стартом
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
+
+if __name__ == '__main__':
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        pass

@@ -2,7 +2,6 @@ import asyncio
 import logging
 import re
 from datetime import datetime, timedelta
-from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -26,16 +25,16 @@ BOT_TOKEN = '7988135474:AAGgeT1tOlPR-DXhZmpeimukr1uBvL6eAvY'
 ADMIN_ID = 358741967
 
 # Константы для новой премии
-PLAN_CONVERSION = 9.5
-PLAN_UPT = 2.0
+PLAN_CONVERSION = 8.0
+PLAN_UPT = 1.9
 BASE_CONV_RATE = 7665
 HOURS_NORM = 168
 
 # Начальные значения старых планов магазина
 DEFAULT_PLANS = {
-    'conversion': 10.0,
-    'upt': 2.0,
-    'check': 3500.0,
+    'conversion': 8.0,
+    'upt': 1.9,
+    'check': 5799.0,
     'personal_cph': 1.5,
     'personal_check': 5247.0
 }
@@ -52,6 +51,7 @@ class BotStates(StatesGroup):
     waiting_for_personal_plans = State()
     waiting_for_emp_plan = State()
     waiting_for_bonus = State()
+    waiting_for_report_date = State()
 
 # ================= БАЗА ДАННЫХ =================
 async def init_db():
@@ -215,14 +215,12 @@ async def cmd_load_archive(message: types.Message):
             current_month = datetime.now().strftime('%Y-%m')
             
             async with aiosqlite.connect(DB_NAME) as db:
-                # Если введены все нули — это триггер полного очищения месяца от тестового мусора
                 if revenue == 0 and traffic == 0 and conversion == 0 and upt == 0:
                     await db.execute('DELETE FROM store_daily_history WHERE date LIKE ?', (f"{current_month}%",))
                     await db.commit()
                     await message.answer("База данных за текущий месяц полностью очищена (все тесты удалены).")
                     return
                 
-                # Обычная логика загрузки чистых агрегированных данных
                 calc_baskets = traffic * (conversion / 100)
                 calc_items = calc_baskets * upt
                 archive_date = f"{current_month}-00"
@@ -318,7 +316,7 @@ async def save_personal_plans(message: types.Message, state: FSMContext):
     except:
         await message.answer("Ошибка формата. Введите два числа через запятую.")
 
-# ================= РАСЧЕТ ПРЕМИИ (НОВАЯ ЛОГИКА) =================
+# ================= РАСЧЕТ ПРЕМИИ =================
 @dp.message(F.text == "Премия")
 async def bonus_start(message: types.Message, state: FSMContext):
     async with aiosqlite.connect(DB_NAME) as db:
@@ -399,7 +397,6 @@ async def calculate_bonus(message: types.Message, state: FSMContext):
     store_conversion = (total_baskets / total_traffic) * 100 if total_traffic > 0 else 0
     store_upt = total_items / total_baskets if total_baskets > 0 else 0
     
-    # Принудительное округление для исключения ловушки 1.996 при сравнении с планом
     store_upt = round(store_upt, 2)
     
     conv_fulfillment = (store_conversion / PLAN_CONVERSION) * 100
@@ -449,7 +446,7 @@ async def calculate_bonus(message: types.Message, state: FSMContext):
 
 # ================= АВТОМАТИЧЕСКИЙ ПАРСИНГ ОТЧЕТА 8420 =================
 @dp.message(F.text.startswith("8420"))
-async def parse_evening_report(message: types.Message):
+async def parse_evening_report(message: types.Message, state: FSMContext):
     text = message.text
     raw_numbers = []
     
@@ -464,120 +461,41 @@ async def parse_evening_report(message: types.Message):
         conversion_pct = raw_numbers[3]
         upt = raw_numbers[4]
         
-        # --- УМНОЕ ОПРЕДЕЛЕНИЕ ДАТЫ ---
-        now = datetime.now()
-        if now.hour < 22:
-            # Скинули до 22:00 — значит, досылают хвосты за вчера
-            target_date = (now - timedelta(days=1)).strftime('%Y-%m-%d')
-            date_label = "ВЧЕРАШНИЙ день"
-        else:
-            # Скинули после 22:00 — штатный отчёт за текущие сутки
-            target_date = now.strftime('%Y-%m-%d')
-            date_label = "ТЕКУЩИЕ сутки"
-            
-        calc_baskets = traffic * (conversion_pct / 100)
-        calc_items = calc_baskets * upt
+        await state.update_data(pending_report={
+            'revenue': revenue,
+            'traffic': traffic,
+            'conversion_pct': conversion_pct,
+            'upt': upt
+        })
         
-        async with aiosqlite.connect(DB_NAME) as db:
-            await db.execute('''
-                INSERT OR REPLACE INTO store_daily_history 
-                (date, revenue, traffic, calculated_baskets, calculated_items) 
-                VALUES (?, ?, ?, ?, ?)
-            ''', (target_date, revenue, traffic, calc_baskets, calc_items))
-            await db.commit()
-            
-        await message.reply(f"Данные автоматически распознаны за **{date_label} ({target_date})** и сохранены в базу.\n\n"
-                            f"Расчетные чеки: {calc_baskets:.2f}\nРасчетные товары: {calc_items:.2f}")
-        
-# =============== КОМАНДА (АДМИН) =================
-@dp.message(F.text == "Команда")
-async def cmd_team_list(message: types.Message):
-    if message.from_user.id != ADMIN_ID: return
-    async with aiosqlite.connect(DB_NAME) as db:
-        cursor = await db.execute("SELECT user_id, full_name FROM users WHERE status = 'approved' AND user_id != ?", (ADMIN_ID,))
-        users = await cursor.fetchall()
-        
-    if not users:
-        await message.answer("В команде пока никого нет.")
-        return
-
-    for uid, name in users:
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Удалить", callback_data=f"delete_{uid}")]])
-        await message.answer(f"Сотрудник: {name}", reply_markup=kb)
-
-# ================= ПРОЧЕЕ =================
-@dp.message(F.text == "Инструкция")
-async def cmd_help(message: types.Message):
-    is_admin = (message.from_user.id == ADMIN_ID)
-    
-    text = (
-        "Инструкция\n\n"
-        "Отчет по магазину 8420:\n"
-        "Просто перешли вечерний отчет, начинающийся с 8420.\n"
-        "Бот сам достанет Выручку, Трафик, Конверсию и UPT.\n\n"
-        "Отчет через запятую (старый):\n"
-        "Пришли цифры: Выручка, Чеки, Штуки, Заходы.\n"
-        "Пример: 140000, 42, 84, 400.\n\n"
-        "Расчет премии:\n"
-        "Нажми «Премия», выбери сотрудника и введи: Личный Факт, Отработанные часы.\n"
-        "Пример: 950000, 160."
-    )
-    
-    if is_admin:
-        text += (
-            "\n\nЗагрузка архива:\n"
-            "Для загрузки старых данных введи:\n"
-            "/load_archive Выручка, Трафик, Конверсия, UPT"
+        await state.set_state(BotStates.waiting_for_report_date)
+        await message.reply(
+            "Отчет успешно распознан!\n\n"
+            "Укажи дату этого отчета в формате ДД.ММ (например: 18.06 или 04.07):",
+            reply_markup=get_cancel_keyboard()
         )
+
+@dp.message(BotStates.waiting_for_report_date)
+async def process_report_date(message: types.Message, state: FSMContext):
+    text = message.text.strip()
+    match = re.match(r'^(\d{1,2})[\.,](\d{1,2})$', text)
+    
+    if not match:
+        await message.answer("Неверный формат. Введи день и месяц через точку, например: 18.06\n\nИли нажми «Назад» для отмены.")
+        return
         
-    await message.answer(text)
-
-@dp.callback_query(F.data.startswith(("approve_", "reject_", "delete_")))
-async def callbacks_handler(callback: CallbackQuery):
-    action, uid = callback.data.split("_")
-    uid = int(uid)
-    async with aiosqlite.connect(DB_NAME) as db:
-        if action == "approve":
-            await db.execute("UPDATE users SET status = 'approved' WHERE user_id = ?", (uid,))
-            await bot.send_message(uid, "Доступ открыт!", reply_markup=get_main_keyboard(False))
-            await callback.message.edit_text("Пользователь одобрен.")
-        elif action == "reject" or action == "delete":
-            await db.execute("DELETE FROM users WHERE user_id = ?", (uid,))
-            await callback.message.edit_text("Доступ закрыт/удален.")
-        await db.commit()
-    await callback.answer()
-
-@dp.message()
-async def auto_report(message: types.Message):
+    day = int(match.group(1))
+    month = int(match.group(2))
+    
+    now = datetime.now()
+    year = now.year
+    
+    if now.month == 1 and month == 12:
+        year -= 1
+    
     try:
-        data = message.text.replace(' ', '').split(',')
-        if len(data) == 4:
-            to_sum, baskets, items, visitors = map(float, data)
-            plans = await get_plans()
-            p_conv, p_upt, p_check = plans[0], plans[1], plans[2]
-
-            f_conv = (baskets / visitors) * 100 if visitors > 0 else 0
-            f_upt = items / baskets if baskets > 0 else 0
-            f_check = to_sum / baskets if baskets > 0 else 0
-
-            res = (
-                f"{STORE_CODE}\n\n"
-                f"{int(to_sum)}\n"
-                f"{int(visitors)}\n"
-                f"{f_conv:.1f}% ({int(f_conv/p_conv*100)}%)\n"
-                f"{f_upt:.2f} ({int(f_upt/p_upt*100)}%)\n"
-                f"{f_check:.0f} ({int(f_check/p_check*100)}%)"
-            )
-            await message.answer(res)
-    except:
-        pass
-
-async def main():
-    await init_db()
-    await dp.start_polling(bot)
-
-if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        pass
+        target_date_obj = datetime(year, month, day)
+        target_date = target_date_obj.strftime('%Y-%m-%d')
+    except ValueError:
+        await message.answer("Такой даты не существует в календаре. Перепроверь числа.")
+        return
